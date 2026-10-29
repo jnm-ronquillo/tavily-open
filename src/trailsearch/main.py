@@ -878,6 +878,7 @@ async def search(request: SearchRequest):
                 enabled_engines=request.enabled_engines,
                 days=request.days,
                 topic=request.topic,
+                include_domains=request.include_domains,
             )
         )
 

@@ -99,6 +99,55 @@ async def test_brave_provider_normalizes_web_results():
     await client.aclose()
 
 
+@pytest.mark.asyncio
+async def test_brave_provider_caps_count_and_sends_domain_goggle():
+    """Brave provider should cap count at 20 and restrict domains via an inline Goggle."""
+    captured = {}
+
+    async def handler(request):
+        captured.update(request.url.params)
+        return httpx.Response(200, json={"web": {"results": []}})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    provider = BraveSearchProvider(client=client, api_key="test-key")
+
+    await provider.search(
+        SearchProviderRequest(
+            query="example",
+            limit=40,
+            provider="brave",
+            include_domains=["www.Example.com", "news.example.org", "example.com", " "],
+        )
+    )
+
+    assert captured["count"] == "20"
+    assert captured["goggles"] == "$discard\n$site=example.com\n$site=news.example.org"
+
+    await client.aclose()
+
+
+@pytest.mark.asyncio
+async def test_brave_provider_omits_goggle_without_domains():
+    """Brave provider should not send a Goggle when no domains are requested."""
+    captured = {}
+
+    async def handler(request):
+        captured.update(request.url.params)
+        return httpx.Response(200, json={"web": {"results": []}})
+
+    transport = httpx.MockTransport(handler)
+    client = httpx.AsyncClient(transport=transport)
+    provider = BraveSearchProvider(client=client, api_key="test-key")
+
+    await provider.search(SearchProviderRequest(query="example", limit=5, provider="brave"))
+
+    assert captured["count"] == "5"
+    assert "goggles" not in captured
+
+    await client.aclose()
+
+
 def test_create_search_provider_rejects_unknown_provider():
     """Factory should reject unsupported provider names."""
     with pytest.raises(ValueError):

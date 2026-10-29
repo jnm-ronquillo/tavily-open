@@ -5,7 +5,7 @@ Search provider abstractions and concrete implementations.
 from __future__ import annotations
 
 import time
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from typing import Protocol
 
 import httpx
@@ -66,6 +66,7 @@ class SearchProviderRequest:
     enabled_engines: str = ""
     days: int | None = None  # Time range filter in days
     topic: str | None = None  # Topic for search classification
+    include_domains: list[str] = field(default_factory=list)  # Restrict results to these domains
 
 
 @dataclass
@@ -179,6 +180,9 @@ class SearXNGSearchProvider:
 class BraveSearchProvider:
     """Provider backed by Brave Search API."""
 
+    # Brave rejects count > 20 with HTTP 422.
+    MAX_COUNT = 20
+
     def __init__(
         self,
         client: httpx.AsyncClient | None = None,
@@ -189,9 +193,34 @@ class BraveSearchProvider:
         self.api_key = api_key
         self.api_base = api_base.rstrip("/")
 
+    @staticmethod
+    def _build_domain_goggle(include_domains: list[str]) -> str:
+        """Build an inline Goggle that keeps only results from the given domains.
+
+        Brave has no include_domains parameter, and site: operators hit the
+        600-character query limit with long domain lists. A Goggle filters at
+        the engine, so all returned results are usable.
+        """
+        domains = dict.fromkeys(
+            domain.strip().lower().removeprefix("www.")
+            for domain in include_domains
+            if domain.strip()
+        )
+        if not domains:
+            return ""
+        return "\n".join(["$discard", *(f"$site={domain}" for domain in domains)])
+
     async def search(self, request: SearchProviderRequest) -> SearchProviderResponse:
         if not self.api_key:
             raise ValueError("BRAVE_SEARCH_API_KEY is required for the brave provider")
+
+        params: dict[str, str | int] = {
+            "q": request.query,
+            "count": min(request.limit, self.MAX_COUNT),
+        }
+        goggle = self._build_domain_goggle(request.include_domains)
+        if goggle:
+            params["goggles"] = goggle
 
         owns_client = self.client is None
         client = self.client or httpx.AsyncClient(timeout=httpx.Timeout(SEARXNG_TIMEOUT_SECONDS))
@@ -199,7 +228,7 @@ class BraveSearchProvider:
         try:
             response = await client.get(
                 f"{self.api_base}/web/search",
-                params={"q": request.query, "count": request.limit},
+                params=params,
                 headers={"X-Subscription-Token": self.api_key, "Accept": "application/json"},
             )
             response.raise_for_status()
